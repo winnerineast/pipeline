@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-__version__ = "1.5.309"
+__version__ = "1.5.330"
 
 import base64 as _base64
 import glob as _glob
@@ -309,6 +309,47 @@ _PIPELINE_RESOURCE_TYPE_CONFIG_DICT = {
 #          // 3 characters for chip
 
 
+def _exec_cmd(cmd, throw_on_error=True, env=None, stream_output=False, cwd=None, cmd_stdin=None,
+             **kwargs):
+    """
+    Runs a command as a child process.
+    A convenience wrapper for running a command from a Python script.
+    Keyword arguments:
+    cmd -- the command to run, as a list of strings
+    throw_on_error -- if true, raises an Exception if the exit code of the program is nonzero
+    env -- additional environment variables to be defined when running the child process
+    cwd -- working directory for child process
+    stream_output -- if true, does not capture standard output and error; if false, captures these
+      streams and returns them
+    cmd_stdin -- if specified, passes the specified string as stdin to the child process.
+    Note on the return value: If stream_output is true, then only the exit code is returned. If
+    stream_output is false, then a tuple of the exit code, standard output and standard error is
+    returned.
+    """
+    cmd_env = _os.environ.copy()
+    if env:
+        cmd_env.update(env)
+
+    if stream_output:
+        child = _subprocess.Popen(cmd, env=cmd_env, cwd=cwd, universal_newlines=True,
+                                 stdin=_subprocess.PIPE, **kwargs)
+        child.communicate(cmd_stdin)
+        exit_code = child.wait()
+        if throw_on_error and exit_code is not 0:
+            raise Exception("Non-zero exitcode: %s" % (exit_code))
+        return exit_code
+    else:
+        child = _subprocess.Popen(
+            cmd, env=cmd_env, stdout=_subprocess.PIPE, stdin=_subprocess.PIPE, stderr=_subprocess.PIPE,
+            cwd=cwd, universal_newlines=True, **kwargs)
+        (stdout, stderr) = child.communicate(cmd_stdin)
+        exit_code = child.wait()
+        if throw_on_error and exit_code is not 0:
+            raise Exception("Non-zero exit code: %s\n\nSTDOUT:\n%s\n\nSTDERR:%s" %
+                                        (exit_code, stdout, stderr))
+        return exit_code, stdout, stderr
+
+
 # TODO: this should be restricted to just Git repos and not S3 and stuff like that
 _GIT_URI_REGEX = _re.compile(r"^[^/]*:")
 
@@ -322,7 +363,7 @@ def _parse_subdirectory(uri):
         subdirectory = uri[uri.find('#')+1:]
         parsed_uri = uri[:uri.find('#')]
     if subdirectory and '.' in subdirectory:
-        raise ExecutionException("'.' is not allowed in project subdirectory paths.")
+        raise Exception("'.' is not allowed in project subdirectory paths.")
     return parsed_uri, subdirectory
 
 
@@ -344,7 +385,7 @@ def _is_valid_branch_name(work_dir, version):
 
 def _expand_uri(uri):
     if _is_local_uri(uri):
-        return os.path.abspath(uri)
+        return _os.path.abspath(uri)
     return uri
 
 
@@ -367,15 +408,15 @@ def _fetch_project(uri, force_tempdir, version=None, git_username=None, git_pass
         print("=== Fetching project from %s into %s ===" % (uri, dst_dir))
     if _is_local_uri(uri):
         if version is not None:
-            raise ExecutionException("Setting a version is only supported for Git project URIs")
+            raise Exception("Setting a version is only supported for Git project URIs")
         if use_temp_dst_dir:
             _dir_util.copy_tree(src=parsed_uri, dst=dst_dir)
     else:
         assert _GIT_URI_REGEX.match(parsed_uri), "Non-local URI %s should be a Git URI" % parsed_uri
         _fetch_git_repo(parsed_uri, version, dst_dir, git_username, git_password)
-    res = _os.path.abspath(os.path.join(dst_dir, subdirectory))
+    res = _os.path.abspath(_os.path.join(dst_dir, subdirectory))
     if not _os.path.exists(res):
-        raise ExecutionException("Could not find subdirectory %s of %s" % (subdirectory, dst_dir))
+        raise Exception("Could not find subdirectory %s of %s" % (subdirectory, dst_dir))
     return res
 
 
@@ -394,19 +435,19 @@ def _fetch_git_repo(uri, version, dst_dir, git_username, git_password):
     origin = repo.create_remote("origin", uri)
     git_args = [git_username, git_password]
     if not (all(arg is not None for arg in git_args) or all(arg is None for arg in git_args)):
-        raise ExecutionException("Either both or neither of git_username and git_password must be "
+        raise Exception("Either both or neither of git_username and git_password must be "
                                  "specified.")
     if git_username:
         git_credentials = "url=%s\nusername=%s\npassword=%s" % (uri, git_username, git_password)
         repo.git.config("--local", "credential.helper", "cache")
-        process.exec_cmd(cmd=["git", "credential-cache", "store"], cwd=dst_dir,
+        _exec_cmd(cmd=["git", "credential-cache", "store"], cwd=dst_dir,
                          cmd_stdin=git_credentials)
     origin.fetch()
     if version is not None:
         try:
             repo.git.checkout(version)
         except git.exc.GitCommandError as e:
-            raise ExecutionException("Unable to checkout version '%s' of git repo %s"
+            raise Exception("Unable to checkout version '%s' of git repo %s"
                                      "- please ensure that the version exists in the repo. "
                                      "Error: %s" % (version, uri, e))
     else:
@@ -1011,7 +1052,7 @@ def resource_optimize_and_deploy(
             resource_shadow_tag_list = list()
             routes_dict = kube_routes['routes']
 
-            for k, v in routes_dict.items():
+            for k, _ in routes_dict.items():
                 resource_tag_dict = routes_dict[k]
                 resource_split_tag_and_weight_dict[k] = resource_tag_dict['split']
                 if resource_tag_dict.get('shadow', False) is True:
@@ -1165,7 +1206,7 @@ def resource_routes_get(
 
         routes_dict = kube_routes['routes']
 
-        for k, v in routes_dict.items():
+        for k, _ in routes_dict.items():
             resource_tag_dict = routes_dict[k]
             resource_split_tag_and_weight_dict[k] = resource_tag_dict['split']
             if resource_tag_dict.get('shadow', False) is True:
@@ -1533,10 +1574,10 @@ def resource_upload(
     experiment_id = resource_source_add_dict.get('experiment_id', None)
     experiment_name = resource_source_add_dict.get('experiment_name', None)
 
-    runtime_list = ','.join(resource_source_add_dict.get('runtime_list', []))
+#    runtime_list = ','.join(resource_source_add_dict.get('runtime_list', []))
     return_dict[endpoint] = resource_source_add_dict
 
-    kubernetes_resource_type_list = ','.join(_PIPELINE_SUPPORTED_KUBERNETES_RESOURCE_TYPE_LIST)
+#    kubernetes_resource_type_list = ','.join(_PIPELINE_SUPPORTED_KUBERNETES_RESOURCE_TYPE_LIST)
 
     response_dict = {}
     if host:
@@ -1780,6 +1821,12 @@ def version():
     train_base_image_default = '%s/%s/%s-%s:%s' % (_default_image_registry_url, _default_image_registry_repo, _default_image_registry_train_namespace, _default_model_chip, _default_image_registry_base_tag)
     predict_base_image_default = '%s/%s/%s-%s:%s' % (_default_image_registry_url, _default_image_registry_repo, _default_image_registry_predict_namespace, _default_model_chip, _default_image_registry_base_tag)
 
+    generated_path = '~/.pipelineai/cluster/yaml'
+    generated_path = _os.path.expandvars(generated_path)
+    generated_path = _os.path.expanduser(generated_path)
+    generated_path = _os.path.abspath(generated_path)
+    generated_path = _os.path.normpath(generated_path)
+
     return_dict = {
         "cli_version": __version__,
         "api_version": _pipeline_api_version,
@@ -1789,10 +1836,12 @@ def version():
         "train_base_image_default": train_base_image_default,
         "predict_base_image_default": predict_base_image_default,
         "templates_path_default": _default_pipeline_templates_path,
+        "generated_templates_path": generated_path
     }
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -1907,7 +1956,8 @@ def predict_kube_endpoint(model_name,
                    "model_variants": model_variant_list}
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -1941,7 +1991,8 @@ def predict_kube_endpoints(
         return_dict = {"endpoints": endpoint_list}
 
         if _http_mode:
-            return _jsonify(return_dict)
+            return return_dict
+            # return _jsonify(return_dict)
         else:
             return return_dict
 
@@ -2311,7 +2362,7 @@ def predict_server_build(model_name,
 
         print("")
         # TODO: Narrow the build_context_path (difference between model_path and current path?)
-        cmd = 'docker build %s %s %s %s -t %s/%s/%s-%s:%s -f %s %s' % (no_cache, squash, http_proxy_build_arg_snippet, https_proxy_build_arg_snippet, image_registry_url, image_registry_repo, image_registry_namespace, model_name, model_tag, generated_Dockerfile, model_path)
+        cmd = 'docker build --network=host %s %s %s %s -t %s/%s/%s-%s:%s -f %s %s' % (no_cache, squash, http_proxy_build_arg_snippet, https_proxy_build_arg_snippet, image_registry_url, image_registry_repo, image_registry_namespace, model_name, model_tag, generated_Dockerfile, model_path)
 
         print(cmd)
         print("")
@@ -2320,8 +2371,11 @@ def predict_server_build(model_name,
         return_dict = {"status": "incomplete",
                        "error_message": "Build type '%s' not found" % build_type}
 
+#        if _http_mode:
+#            return _jsonify(return_dict)
         if _http_mode:
-            return _jsonify(return_dict)
+            return return_dict
+            # return _jsonify(return_dict)
         else:
             return return_dict
 
@@ -2332,7 +2386,8 @@ def predict_server_build(model_name,
                    "model_path": model_path}
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -2519,7 +2574,8 @@ def predict_server_register(model_name,
                   }
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -2793,280 +2849,282 @@ def model_archive_untar(model_name,
 _ALLOWED_EXTENSIONS = set(['tar', 'gz', 'tar.gz'])
 
 
-def predict_kube_start(model_name,
-                       model_tag,
-                       model_chip=None,
-                       namespace=None,
-                       stream_logger_url=None,
-                       stream_logger_topic=None,
-                       stream_input_url=None,
-                       stream_input_topic=None,
-                       stream_output_url=None,
-                       stream_output_topic=None,
-#                       target_core_util_percentage='50',
-#                       min_replicas='1',
-#                       max_replicas='2',
-                       image_registry_url=None,
-                       image_registry_repo=None,
-                       image_registry_namespace=None,
-                       image_registry_base_tag=None,
-                       image_registry_base_chip=None,
-                       pipeline_templates_path=None):
+# def predict_kube_start(model_name,
+#                        model_tag,
+#                        model_chip=None,
+#                        namespace=None,
+#                        stream_logger_url=None,
+#                        stream_logger_topic=None,
+#                        stream_input_url=None,
+#                        stream_input_topic=None,
+#                        stream_output_url=None,
+#                        stream_output_topic=None,
+# #                       target_core_util_percentage='50',
+# #                       min_replicas='1',
+# #                       max_replicas='2',
+#                        image_registry_url=None,
+#                        image_registry_repo=None,
+#                        image_registry_namespace=None,
+#                        image_registry_base_tag=None,
+#                        image_registry_base_chip=None,
+#                        pipeline_templates_path=None):
 
-    model_name = _validate_and_prep_name(model_name)
-    model_tag = _validate_and_prep_tag(model_tag)
+#     model_name = _validate_and_prep_name(model_name)
+#     model_tag = _validate_and_prep_tag(model_tag)
 
-    if not namespace:
-        namespace = _default_namespace
+#     if not namespace:
+#         namespace = _default_namespace
 
-    if not image_registry_url:
-        image_registry_url = _default_image_registry_url
+#     if not image_registry_url:
+#         image_registry_url = _default_image_registry_url
 
-    if not image_registry_repo:
-        image_registry_repo = _default_image_registry_repo
+#     if not image_registry_repo:
+#         image_registry_repo = _default_image_registry_repo
 
-    if not image_registry_namespace:
-        image_registry_namespace = _default_image_registry_predict_namespace
+#     if not image_registry_namespace:
+#         image_registry_namespace = _default_image_registry_predict_namespace
 
-    if not image_registry_base_tag:
-        image_registry_base_tag = _default_image_registry_base_tag
+#     if not image_registry_base_tag:
+#         image_registry_base_tag = _default_image_registry_base_tag
 
-    if not model_chip:
-        model_chip = _default_model_chip
+#     if not model_chip:
+#         model_chip = _default_model_chip
 
-    if not image_registry_base_chip:
-        image_registry_base_chip = model_chip
+#     if not image_registry_base_chip:
+#         image_registry_base_chip = model_chip
 
-    if not pipeline_templates_path:
-        pipeline_templates_path = _default_pipeline_templates_path
+#     if not pipeline_templates_path:
+#         pipeline_templates_path = _default_pipeline_templates_path
 
-    rendered_yamls = _create_predict_kube_Kubernetes_yaml(
-                                      model_name=model_name,
-                                      model_tag=model_tag,
-                                      model_chip=model_chip,
-                                      namespace=namespace,
-                                      stream_logger_url=stream_logger_url,
-                                      stream_logger_topic=stream_logger_topic,
-                                      stream_input_url=stream_input_url,
-                                      stream_input_topic=stream_input_topic,
-                                      stream_output_url=stream_output_url,
-                                      stream_output_topic=stream_output_topic,
-#                                      target_core_util_percentage=target_core_util_percentage,
-#                                      min_replicas=min_replicas,
-#                                      max_replicas=max_replicas,
-                                      image_registry_url=image_registry_url,
-                                      image_registry_repo=image_registry_repo,
-                                      image_registry_namespace=image_registry_namespace,
-                                      image_registry_base_tag=image_registry_base_tag,
-                                      image_registry_base_chip=image_registry_base_chip,
-                                      pipeline_templates_path=pipeline_templates_path)
+#     rendered_yamls = _create_predict_kube_Kubernetes_yaml(
+#                                       model_name=model_name,
+#                                       model_tag=model_tag,
+#                                       model_chip=model_chip,
+#                                       namespace=namespace,
+#                                       stream_logger_url=stream_logger_url,
+#                                       stream_logger_topic=stream_logger_topic,
+#                                       stream_input_url=stream_input_url,
+#                                       stream_input_topic=stream_input_topic,
+#                                       stream_output_url=stream_output_url,
+#                                       stream_output_topic=stream_output_topic,
+# #                                      target_core_util_percentage=target_core_util_percentage,
+# #                                      min_replicas=min_replicas,
+# #                                      max_replicas=max_replicas,
+#                                       image_registry_url=image_registry_url,
+#                                       image_registry_repo=image_registry_repo,
+#                                       image_registry_namespace=image_registry_namespace,
+#                                       image_registry_base_tag=image_registry_base_tag,
+#                                       image_registry_base_chip=image_registry_base_chip,
+#                                       pipeline_templates_path=pipeline_templates_path)
 
-    for rendered_yaml in rendered_yamls:
-        # For now, only handle '-deploy' and '-svc' and '-ingress' (not autoscale or routerules)
-        if ('-stream-deploy' not in rendered_yaml and '-stream-svc' not in rendered_yaml) and ('-deploy' in rendered_yaml or '-svc' in rendered_yaml or '-ingress' in rendered_yaml):
-            _istio_apply(yaml_path=rendered_yaml,
-                         namespace=namespace)
+#     for rendered_yaml in rendered_yamls:
+#         # For now, only handle '-deploy' and '-svc' and '-ingress' (not autoscale or routerules)
+#         if ('-stream-deploy' not in rendered_yaml and '-stream-svc' not in rendered_yaml) and ('-deploy' in rendered_yaml or '-svc' in rendered_yaml or '-ingress' in rendered_yaml):
+#             _istio_apply(yaml_path=rendered_yaml,
+#                          namespace=namespace)
 
-# TODO:  Either fix this - or change to use gateway vs. ingress
-#    endpoint_url = _get_model_kube_endpoint(model_name=model_name,
-#                                            namespace=namespace,
-#                                            image_registry_namespace=image_registry_namespace)
+# # TODO:  Either fix this - or change to use gateway vs. ingress
+# #    endpoint_url = _get_model_kube_endpoint(model_name=model_name,
+# #                                            namespace=namespace,
+# #                                            image_registry_namespace=image_registry_namespace)
 
-#    endpoint_url = endpoint_url.rstrip('/')
+# #    endpoint_url = endpoint_url.rstrip('/')
 
-    return_dict = {
-        "status": "complete",
-        "model_name": model_name,
-        "model_tag": model_tag,
-#        "endpoint_url": endpoint_url,
-#        "comments": "The `endpoint_url` is an internal IP to the ingress controller. No traffic will be allowed until you enable traffic to this endpoint using `pipeline predict-kube-route`. This extra routing step is intentional."
-    }
+#     return_dict = {
+#         "status": "complete",
+#         "model_name": model_name,
+#         "model_tag": model_tag,
+# #        "endpoint_url": endpoint_url,
+# #        "comments": "The `endpoint_url` is an internal IP to the ingress controller. No traffic will be allowed until you enable traffic to this endpoint using `pipeline predict-kube-route`. This extra routing step is intentional."
+#     }
 
-    if _http_mode:
-        return _jsonify(return_dict)
-    else:
-        return return_dict
+#     if _http_mode:
+#         return return_dict
+#         # return _jsonify(return_dict)
+#     else:
+#         return return_dict
 
-    response = _requests.get(url=endpoint_url,
-                             headers=accept_headers,
-                             timeout=timeout_seconds)
+#     response = _requests.get(url=endpoint_url,
+#                              headers=accept_headers,
+#                              timeout=timeout_seconds)
 
-    if response.text:
-        print("")
-        _pprint(response.text)
+#     if response.text:
+#         print("")
+#         _pprint(response.text)
 
-    # Consume messages from topic
-    endpoint_url = '%s/consumers/%s/instances/%s/records' % (stream_url, stream_consumer_name, stream_consumer_name)
-    print(endpoint_url)
-    response = _requests.get(url=endpoint_url,
-                             headers=accept_headers,
-                             timeout=timeout_seconds)
+#     # Consume messages from topic
+#     endpoint_url = '%s/consumers/%s/instances/%s/records' % (stream_url, stream_consumer_name, stream_consumer_name)
+#     print(endpoint_url)
+#     response = _requests.get(url=endpoint_url,
+#                              headers=accept_headers,
+#                              timeout=timeout_seconds)
 
-    messages = response.text
+#     messages = response.text
 
-    if response.text:
-        print("")
-        _pprint(response.text)
+#     if response.text:
+#         print("")
+#         _pprint(response.text)
 
-    # Remove consumer subscription from topic
-    endpoint_url = '%s/consumers/%s/instances/%s' % (stream_url, stream_consumer_name, stream_consumer_name)
-    endpoint_url = endpoint_url.rstrip('/')
-    print(endpoint_url)
-    response = _requests.delete(url=endpoint_url,
-                                headers=content_type_headers,
-                                timeout=timeout_seconds)
+#     # Remove consumer subscription from topic
+#     endpoint_url = '%s/consumers/%s/instances/%s' % (stream_url, stream_consumer_name, stream_consumer_name)
+#     endpoint_url = endpoint_url.rstrip('/')
+#     print(endpoint_url)
+#     response = _requests.delete(url=endpoint_url,
+#                                 headers=content_type_headers,
+#                                 timeout=timeout_seconds)
 
-    if response.text:
-        print("")
-        _pprint(response.text)
+#     if response.text:
+#         print("")
+#         _pprint(response.text)
 
-    return messages
-
-
-def stream_kube_consume(model_name,
-                        model_tag,
-                        stream_topic,
-                        stream_consumer_name=None,
-                        stream_offset=None,
-                        namespace=None,
-                        image_registry_namespace=None,
-                        timeout_seconds=1200):
-
-    if not namespace:
-        namespace = _default_namespace
-
-    if not stream_offset:
-        stream_offset = "earliest"
-
-    if not image_registry_namespace:
-        image_registry_namespace = _default_image_registry_stream_namespace
-
-    service_name = "%s-%s-%s" % (image_registry_namespace, model_name, model_tag)
-    stream_url = _get_cluster_service(service_name=service_name,
-                                      namespace=namespace)
-
-    stream_url = stream_url.rstrip('/')
-
-    stream_url = 'http://%s/stream/%s/%s' % (stream_url, model_name, model_tag)
-
-    if not stream_consumer_name:
-        stream_consumer_name = '%s-%s-%s' % (model_name, model_tag, stream_topic)
-
-    stream_http_consume(stream_url=stream_url,
-                        stream_topic=stream_topic,
-                        stream_consumer_name=stream_consumer_name,
-                        stream_offset=stream_offset,
-                        namespace=namespace,
-                        image_registry_namespace=image_registry_namespace,
-                        timeout_seconds=timeout_seconds)
+#     return messages
 
 
-def predict_stream_test(model_name,
-                        model_tag,
-                        test_request_path,
-                        stream_input_topic=None,
-                        namespace=None,
-                        image_registry_namespace=None,
-                        test_request_concurrency=1,
-                        test_request_mime_type='application/json',
-                        test_response_mime_type='application/json',
-                        test_request_timeout_seconds=1200):
+# def stream_kube_consume(model_name,
+#                         model_tag,
+#                         stream_topic,
+#                         stream_consumer_name=None,
+#                         stream_offset=None,
+#                         namespace=None,
+#                         image_registry_namespace=None,
+#                         timeout_seconds=1200):
 
-    stream_kube_produce(model_name=model_name,
-                        model_tag=model_tag,
-                        test_request_path=test_request_path,
-                        stream_input_topic=stream_input_topic,
-                        namespace=namespace,
-                        image_registry_namespace=image_registry_namespace,
-                        test_request_concurrency=test_request_concurrency,
-                        test_request_mime_type=test_request_mime_type,
-                        test_response_mime_type=test_response_mime_type,
-                        test_request_timeout_seconds=test_request_timeout_seconds)
+#     if not namespace:
+#         namespace = _default_namespace
 
+#     if not stream_offset:
+#         stream_offset = "earliest"
 
-def stream_http_produce(endpoint_url,
-                        test_request_path,
-                        test_request_concurrency=1,
-                        test_request_timeout_seconds=1200):
+#     if not image_registry_namespace:
+#         image_registry_namespace = _default_image_registry_stream_namespace
 
-    endpoint_url = endpoint_url.rstrip('/')
+#     service_name = "%s-%s-%s" % (image_registry_namespace, model_name, model_tag)
+#     stream_url = _get_cluster_service(service_name=service_name,
+#                                       namespace=namespace)
 
-    print("")
-    print("Producing messages for endpoint_url '%s'." % endpoint_url)
-    print("")
+#     stream_url = stream_url.rstrip('/')
 
-    accept_and_content_type_headers = {"Accept": "application/vnd.kafka.v2+json", "Content-Type": "application/vnd.kafka.json.v2+json"}
+#     stream_url = 'http://%s/stream/%s/%s' % (stream_url, model_name, model_tag)
 
-    with open(test_request_path, 'rt') as fh:
-        model_input_text = fh.read()
+#     if not stream_consumer_name:
+#         stream_consumer_name = '%s-%s-%s' % (model_name, model_tag, stream_topic)
 
-    body = '{"records": [{"value":%s}]}' % model_input_text
-
-    response = _requests.post(url=endpoint_url,
-                              headers=accept_and_content_type_headers,
-                              data=body.encode('utf-8'),
-                              timeout=test_request_timeout_seconds)
-
-    return_dict = {"status": "complete",
-                   "endpoint_url": endpoint_url,
-                   "headers": accept_and_content_type_headers,
-                   "timeout": test_request_timeout_seconds,
-                   "test_request_path": test_request_path,
-                   "test_request_concurrency": test_request_concurrency,
-                   "body": body,
-                   "response": response,
-                  }
-
-    if _http_mode:
-        return _jsonify(return_dict)
-    else:
-        return return_dict
+#     stream_http_consume(stream_url=stream_url,
+#                         stream_topic=stream_topic,
+#                         stream_consumer_name=stream_consumer_name,
+#                         stream_offset=stream_offset,
+#                         namespace=namespace,
+#                         image_registry_namespace=image_registry_namespace,
+#                         timeout_seconds=timeout_seconds)
 
 
-def stream_kube_produce(model_name,
-                        model_tag,
-                        test_request_path,
-                        stream_topic=None,
-                        namespace=None,
-                        image_registry_namespace=None,
-                        test_request_concurrency=1,
-                        test_request_mime_type='application/json',
-                        test_response_mime_type='application/json',
-                        test_request_timeout_seconds=1200):
+# def predict_stream_test(model_name,
+#                         model_tag,
+#                         test_request_path,
+#                         stream_input_topic=None,
+#                         namespace=None,
+#                         image_registry_namespace=None,
+#                         test_request_concurrency=1,
+#                         test_request_mime_type='application/json',
+#                         test_response_mime_type='application/json',
+#                         test_request_timeout_seconds=1200):
 
-    if not namespace:
-        namespace = _default_namespace
+#     stream_kube_produce(model_name=model_name,
+#                         model_tag=model_tag,
+#                         test_request_path=test_request_path,
+#                         stream_input_topic=stream_input_topic,
+#                         namespace=namespace,
+#                         image_registry_namespace=image_registry_namespace,
+#                         test_request_concurrency=test_request_concurrency,
+#                         test_request_mime_type=test_request_mime_type,
+#                         test_response_mime_type=test_response_mime_type,
+#                         test_request_timeout_seconds=test_request_timeout_seconds)
 
-    if not image_registry_namespace:
-        image_registry_namespace = _default_image_registry_stream_namespace
 
-    if not stream_topic:
-        stream_topic = '%s-%s-input' % (model_name, model_tag)
+# def stream_http_produce(endpoint_url,
+#                         test_request_path,
+#                         test_request_concurrency=1,
+#                         test_request_timeout_seconds=1200):
 
-    service_name = "%s-%s-%s" % (image_registry_namespace, model_name, model_tag)
+#     endpoint_url = endpoint_url.rstrip('/')
 
-    stream_url = _get_cluster_service(service_name=service_name,
-                                      namespace=namespace)
+#     print("")
+#     print("Producing messages for endpoint_url '%s'." % endpoint_url)
+#     print("")
 
-    stream_url = stream_url.rstrip('/')
+#     accept_and_content_type_headers = {"Accept": "application/vnd.kafka.v2+json", "Content-Type": "application/vnd.kafka.json.v2+json"}
 
-    stream_url = 'http://%s/stream/%s/%s' % (stream_url, model_name, model_tag)
+#     with open(test_request_path, 'rt') as fh:
+#         model_input_text = fh.read()
 
-    stream_url = stream_url.rstrip('/')
+#     body = '{"records": [{"value":%s}]}' % model_input_text
 
-    endpoint_url = '%s/topics/%s' % (stream_url, stream_topic)
+#     response = _requests.post(url=endpoint_url,
+#                               headers=accept_and_content_type_headers,
+#                               data=body.encode('utf-8'),
+#                               timeout=test_request_timeout_seconds)
 
-    endpoint_url = endpoint_url.rstrip('/')
+#     return_dict = {"status": "complete",
+#                    "endpoint_url": endpoint_url,
+#                    "headers": accept_and_content_type_headers,
+#                    "timeout": test_request_timeout_seconds,
+#                    "test_request_path": test_request_path,
+#                    "test_request_concurrency": test_request_concurrency,
+#                    "body": body,
+#                    "response": response,
+#                   }
 
-    # TODO: Enrich return_dict with model_name and model_tag and stream_url and stream_topic
-    # TODO:  The following method returns json.
-    #        Enrich this json response with `model_name`, `model_tag`, `stream_url`, and `stream_topic`
-    return stream_http_produce(endpoint_url=endpoint_url,
-                               test_request_path=test_request_path,
-                               test_request_concurrency=test_request_concurrency,
-                               test_request_mime_type=test_request_mime_type,
-                               test_response_mime_type=test_response_mime_type,
-                               test_request_timeout_seconds=test_request_timeout_seconds)
+#     if _http_mode:
+#         return return_dict
+#         # return _jsonify(return_dict)
+#     else:
+#         return return_dict
+
+
+# def stream_kube_produce(model_name,
+#                         model_tag,
+#                         test_request_path,
+#                         stream_topic=None,
+#                         namespace=None,
+#                         image_registry_namespace=None,
+#                         test_request_concurrency=1,
+#                         test_request_mime_type='application/json',
+#                         test_response_mime_type='application/json',
+#                         test_request_timeout_seconds=1200):
+
+#     if not namespace:
+#         namespace = _default_namespace
+
+#     if not image_registry_namespace:
+#         image_registry_namespace = _default_image_registry_stream_namespace
+
+#     if not stream_topic:
+#         stream_topic = '%s-%s-input' % (model_name, model_tag)
+
+#     service_name = "%s-%s-%s" % (image_registry_namespace, model_name, model_tag)
+
+#     stream_url = _get_cluster_service(service_name=service_name,
+#                                       namespace=namespace)
+
+#     stream_url = stream_url.rstrip('/')
+
+#     stream_url = 'http://%s/stream/%s/%s' % (stream_url, model_name, model_tag)
+
+#     stream_url = stream_url.rstrip('/')
+
+#     endpoint_url = '%s/topics/%s' % (stream_url, stream_topic)
+
+#     endpoint_url = endpoint_url.rstrip('/')
+
+#     # TODO: Enrich return_dict with model_name and model_tag and stream_url and stream_topic
+#     # TODO:  The following method returns json.
+#     #        Enrich this json response with `model_name`, `model_tag`, `stream_url`, and `stream_topic`
+#     return stream_http_produce(endpoint_url=endpoint_url,
+#                                test_request_path=test_request_path,
+#                                test_request_concurrency=test_request_concurrency,
+#                                test_request_mime_type=test_request_mime_type,
+#                                test_response_mime_type=test_response_mime_type,
+#                                test_request_timeout_seconds=test_request_timeout_seconds)
 
 
 def predict_server_test(endpoint_url,
@@ -3089,54 +3147,55 @@ def predict_server_test(endpoint_url,
                                                test_request_timeout_seconds=test_request_timeout_seconds))
 
 
-def predict_kube_test(model_name,
-                      test_request_path,
-                      image_registry_namespace=None,
-                      namespace=None,
-                      test_request_concurrency=1,
-                      test_request_mime_type='application/json',
-                      test_response_mime_type='application/json',
-                      test_request_timeout_seconds=1200):
+# def predict_kube_test(model_name,
+#                       test_request_path,
+#                       image_registry_namespace=None,
+#                       namespace=None,
+#                       test_request_concurrency=1,
+#                       test_request_mime_type='application/json',
+#                       test_response_mime_type='application/json',
+#                       test_request_timeout_seconds=1200):
 
-    if not namespace:
-        namespace = _default_namespace
+#     if not namespace:
+#         namespace = _default_namespace
 
-    if not image_registry_namespace:
-        image_registry_namespace = _default_image_registry_predict_namespace
+#     if not image_registry_namespace:
+#         image_registry_namespace = _default_image_registry_predict_namespace
 
-    if _is_base64_encoded(test_request_path):
-        test_request_path = _decode_base64(test_request_path)
+#     if _is_base64_encoded(test_request_path):
+#         test_request_path = _decode_base64(test_request_path)
 
-    endpoint_url = _get_model_kube_endpoint(model_name=model_name,
-                                            namespace=namespace,
-                                            image_registry_namespace=image_registry_namespace)
+#     endpoint_url = _get_model_kube_endpoint(model_name=model_name,
+#                                             namespace=namespace,
+#                                             image_registry_namespace=image_registry_namespace)
 
-    endpoint_url = endpoint_url.rstrip('/')
+#     endpoint_url = endpoint_url.rstrip('/')
 
-    # This is required to get around the limitation of istio managing only 1 load balancer
-    # See here for more details: https://github.com/istio/istio/issues/1752
-    # If this gets fixed, we can relax the -routerules.yaml and -ingress.yaml in the templates dir
-    #   (we'll no longer need to scope by model_name)
+#     # This is required to get around the limitation of istio managing only 1 load balancer
+#     # See here for more details: https://github.com/istio/istio/issues/1752
+#     # If this gets fixed, we can relax the -routerules.yaml and -ingress.yaml in the templates dir
+#     #   (we'll no longer need to scope by model_name)
 
-    from concurrent.futures import ThreadPoolExecutor
+#     from concurrent.futures import ThreadPoolExecutor
 
-    with ThreadPoolExecutor(max_workers=test_request_concurrency) as executor:
-        for _ in range(test_request_concurrency):
-            executor.submit(_predict_http_test(endpoint_url=endpoint_url,
-                                               test_request_path=test_request_path,
-                                               test_request_mime_type=test_request_mime_type,
-                                               test_response_mime_type=test_response_mime_type,
-                                               test_request_timeout_seconds=test_request_timeout_seconds))
-    return_dict = {"status": "complete",
-                   "model_name": model_name,
-                   "endpoint_url": endpoint_url,
-                   "test_request_path": test_request_path,
-                   "test_request_concurrency": test_request_concurrency}
+#     with ThreadPoolExecutor(max_workers=test_request_concurrency) as executor:
+#         for _ in range(test_request_concurrency):
+#             executor.submit(_predict_http_test(endpoint_url=endpoint_url,
+#                                                test_request_path=test_request_path,
+#                                                test_request_mime_type=test_request_mime_type,
+#                                                test_response_mime_type=test_response_mime_type,
+#                                                test_request_timeout_seconds=test_request_timeout_seconds))
+#     return_dict = {"status": "complete",
+#                    "model_name": model_name,
+#                    "endpoint_url": endpoint_url,
+#                    "test_request_path": test_request_path,
+#                    "test_request_concurrency": test_request_concurrency}
 
-    if _http_mode:
-        return _jsonify(return_dict)
-    else:
-        return return_dict
+#     if _http_mode:
+#         return return_dict
+#         # return _jsonify(return_dict)
+#     else:
+#         return return_dict
 
 
 def predict_http_test(endpoint_url,
@@ -3203,7 +3262,8 @@ def _predict_http_test(endpoint_url,
                    "test_request_path": test_request_path}
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -3228,8 +3288,8 @@ def predict_sage_test(model_name,
                                           test_request_path=test_request_path,
                                           image_registry_namespace=image_registry_namespace,
                                           test_request_mime_type=test_request_mime_type,
-                                          test_response_mime_type=test_response_mime_type,
-                                          test_request_timeout_seconds=test_request_timeout_seconds))
+                                          test_response_mime_type=test_response_mime_type))
+                                          # test_request_timeout_seconds=test_request_timeout_seconds))
 
 
 def _test_single_prediction_sage(model_name,
@@ -3552,7 +3612,8 @@ def predict_kube_scale(model_name,
                    "replicas": replicas}
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -3604,7 +3665,8 @@ def predict_kube_autoscale(model_name,
                    "max_replicas": max_replicas}
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -3984,7 +4046,8 @@ def predict_kube_route(
         }
 
         if _http_mode:
-            return _jsonify(return_dict)
+            return return_dict
+            # return _jsonify(return_dict)
         else:
             return return_dict
 
@@ -4001,7 +4064,8 @@ def predict_kube_route(
                     "error_message": error_message
                 }
                 if _http_mode:
-                    return _jsonify(return_dict)
+                    return return_dict
+                    # return _jsonify(return_dict)
                 else:
                     return return_dict
         except KeyError:
@@ -4010,7 +4074,8 @@ def predict_kube_route(
                 "error_message": error_message
             }
             if _http_mode:
-                return _jsonify(return_dict)
+                return return_dict
+                # return _jsonify(return_dict)
             else:
                 return return_dict
 
@@ -4071,7 +4136,8 @@ def predict_kube_route(
     }
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -4103,7 +4169,8 @@ def predict_kube_stop(model_name,
                    "model_tag": model_tag}
 
     if _http_mode:
-        return _jsonify(return_dict)
+        return return_dict
+        # return _jsonify(return_dict)
     else:
         return return_dict
 
@@ -4421,7 +4488,7 @@ def train_server_build(model_name,
         else:
             https_proxy_build_arg_snippet = ''
 
-        cmd = 'docker build %s %s -t %s/%s/%s-%s:%s -f %s %s' % (http_proxy_build_arg_snippet, https_proxy_build_arg_snippet, image_registry_url, image_registry_repo, image_registry_namespace, model_name, model_tag, generated_Dockerfile, model_path)
+        cmd = 'docker build --network=host %s %s -t %s/%s/%s-%s:%s -f %s %s' % (http_proxy_build_arg_snippet, https_proxy_build_arg_snippet, image_registry_url, image_registry_repo, image_registry_namespace, model_name, model_tag, generated_Dockerfile, model_path)
 
         print(cmd)
         print("")
@@ -4991,7 +5058,8 @@ def predict_sage_route(model_name,
                        "error_message": ve}
 
         if _http_mode:
-            return _jsonify(return_dict)
+            return return_dict
+            # return _jsonify(return_dict)
         else:
             return return_dict
 
@@ -5235,8 +5303,8 @@ sleep 10
 
 kubectl delete -f %s/.generated-virtualservice-admin.yaml
 kubectl delete -f %s/.generated-virtualservice-api.yaml
-#kubectl delete -f %s/.generated-virtualservice-airflow.yaml
-kubectl delete -f %s/.generated-virtualservice-notebook-rook-%s.yaml
+kubectl delete -f %s/.generated-virtualservice-airflow.yaml
+kubectl delete -f %s/.generated-virtualservice-notebook-%s.yaml
 kubectl delete -f %s/.generated-virtualservice-hystrix.yaml
 kubectl delete -f %s/.generated-virtualservice-turbine.yaml
 
@@ -5265,7 +5333,6 @@ kubectl delete clusterrolebinding pipelineai-serviceaccounts-view
        generated_path,
        generated_path,
        generated_path,
-       generated_path,
        chip,
        generated_path,
        generated_path,
@@ -5289,7 +5356,8 @@ def cluster_kube_install(tag,
                          ui_gateway='gateway',
                          api_gateway='gateway',
                          namespace='default',
-                         users_storage_gb='100Gi',
+                         users_storage_gb='10Gi',
+                         users_root_path='/mnt/pipelineai/users',
                          chip=_default_model_chip,
                          pipeline_templates_path=None,
                          dry_run=False):
@@ -5310,6 +5378,7 @@ def cluster_kube_install(tag,
                'PIPELINE_UI_GATEWAY': ui_gateway,
                'PIPELINE_API_GATEWAY': api_gateway,
                'PIPELINE_USERS_STORAGE_GB': users_storage_gb,
+               'PIPELINE_USERS_ROOT_PATH': users_root_path,
                'PIPELINE_IMAGE_REGISTRY_URL': image_registry_url,
                'PIPELINE_IMAGE_REGISTRY_USERNAME': image_registry_username,
                'PIPELINE_IMAGE_REGISTRY_PASSWORD': image_registry_password,
@@ -5323,68 +5392,45 @@ def cluster_kube_install(tag,
     pipeline_templates_path = _os.path.abspath(pipeline_templates_path)
     pipeline_templates_path = _os.path.normpath(pipeline_templates_path)
 
-    generated_path = '~/.pipelineai/cluster/yaml'
+    generated_path = '~/.pipelineai/'
     generated_path = _os.path.expandvars(generated_path)
     generated_path = _os.path.expanduser(generated_path)
     generated_path = _os.path.abspath(generated_path)
     generated_path = _os.path.normpath(generated_path)
-
 
     # Note: This isn't python3 compat (exist_ok)
     # _os.makedirs(generated_path, exist_ok=True)
 
     try: 
         _os.makedirs(generated_path)
+        _os.makedirs(_os.path.join(generated_path, 'cluster/yaml/'))
+        _os.makedirs(_os.path.join(generated_path, 'cluster/config/'))
     except OSError:
         if not _os.path.isdir(generated_path):
             raise
         else:
             pass
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/api/'))
-    filename = 'api-deploy.yaml.template'
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/config/'))
+    filename = '10-kubeadm.conf'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-api-deploy.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/config/10-kubeadm.conf')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/api/'))
-    filename = 'api-rook-deploy.yaml.template'
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/config/'))
+    filename = 'kubeadm-init.yaml'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-api-rook-deploy.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/config/kubeadm-init.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'istio-loadbalancer-1.0.5.yaml.template'
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/storage/'))
+    filename = 'openebs-storageclass.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-istio-loadbalancer-1.0.5.yaml')
-    with open(rendered_path, 'wt') as fh:
-        fh.write(rendered)
-        print("'%s' => '%s'." % (filename, rendered_path))
-
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'istio-loadbalancer-metricsoff-1.0.5.yaml.template'
-    rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-istio-loadbalancer-metricsoff-1.0.5.yaml')
-    with open(rendered_path, 'wt') as fh:
-        fh.write(rendered)
-        print("'%s' => '%s'." % (filename, rendered_path))
-
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'istio-nodeport-1.0.5.yaml.template'
-    rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-istio-nodeport-1.0.5.yaml')
-    with open(rendered_path, 'wt') as fh:
-        fh.write(rendered)
-        print("'%s' => '%s'." % (filename, rendered_path))
-
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'istio-nodeport-metricsoff-1.0.5.yaml.template'
-    rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-istio-nodeport-metricsoff-1.0.5.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-openebs-storageclass.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
@@ -5392,23 +5438,7 @@ def cluster_kube_install(tag,
     path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
     filename = 'pipelineai-gateway.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-pipelineai-gateway.yaml')
-    with open(rendered_path, 'wt') as fh:
-        fh.write(rendered)
-        print("'%s' => '%s'." % (filename, rendered_path))
-
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'virtualservice-admin.yaml.template'
-    rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-virtualservice-admin.yaml')
-    with open(rendered_path, 'wt') as fh:
-        fh.write(rendered)
-        print("'%s' => '%s'." % (filename, rendered_path))
-
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'virtualservice-api.yaml.template'
-    rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-virtualservice-api.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-pipelineai-gateway.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
@@ -5416,237 +5446,174 @@ def cluster_kube_install(tag,
     path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
     filename = 'virtualservice-airflow.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-virtualservice-airflow.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-virtualservice-airflow.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
     path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'virtualservice-notebook-cpu.yaml.template'
+    filename = 'virtualservice-mlflow.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-virtualservice-notebook-cpu.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-virtualservice-mlflow.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
     path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'virtualservice-notebook-gpu.yaml.template'
+    filename = 'virtualservice-grafana.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-virtualservice-notebook-gpu.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-virtualservice-grafana.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
     path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'virtualservice-hystrix.yaml.template'
+    filename = 'crds.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-virtualservice-hystrix.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-crds.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
     path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/istio/'))
-    filename = 'virtualservice-turbine.yaml.template'
+    filename = 'istio-noauth.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-virtualservice-turbine.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-istio-noauth.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/notebook/'))
-    filename = 'notebook-cpu-deploy.yaml.template' 
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/airflow/'))
+    filename = 'airflow-deploy.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-notebook-cpu-deploy.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-airflow-deploy.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/notebook/'))
-    filename = 'notebook-gpu-deploy.yaml.template'
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/airflow/'))
+    filename = 'airflow-svc.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-notebook-gpu-deploy.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-airflow-svc.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/notebook/'))
-    filename = 'notebook-cpu-rook-deploy.yaml.template'
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/mlflow/'))
+    filename = 'mlflow-deploy.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-notebook-cpu-rook-deploy.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-mlflow-deploy.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/notebook/'))
-    filename = 'notebook-gpu-rook-deploy.yaml.template'
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/mlflow/'))
+    filename = 'mlflow-svc.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-notebook-gpu-rook-deploy.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-mlflow-svc.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/rook/'))
-    filename = 'operator.yaml.template'
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/redis/'))
+    filename = 'redis-master-deploy.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-operator.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-redis-master-deploy.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
-    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/rook/'))
-    filename = 'toolbox.yaml.template'
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/redis/'))
+    filename = 'redis-master-svc.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-toolbox.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-redis-master-svc.yaml')
+    with open(rendered_path, 'wt') as fh:
+        fh.write(rendered)
+        print("'%s' => '%s'." % (filename, rendered_path))
+
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/mysql/'))
+    filename = 'mysql-master-deploy.yaml.template'
+    rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-mysql-master-deploy.yaml')
+    with open(rendered_path, 'wt') as fh:
+        fh.write(rendered)
+        print("'%s' => '%s'." % (filename, rendered_path))
+
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/mysql/'))
+    filename = 'mysql-master-svc.yaml.template'
+    rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-mysql-master-svc.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
     path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/storage/'))
-    filename = 'users-pvc.yaml.template'
+    filename = 'users-kubeflow-pvc.yaml.template'
     rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
-    rendered_path = _os.path.join(generated_path, '.generated-users-pvc.yaml')
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-users-kubeflow-pvc.yaml')
+    with open(rendered_path, 'wt') as fh:
+        fh.write(rendered)
+        print("'%s' => '%s'." % (filename, rendered_path))
+
+    path = _os.path.normpath(_os.path.join(pipeline_templates_path, 'cluster/yaml/storage/'))
+    filename = 'tfevent-volume-pvc.yaml.template'
+    rendered = _jinja2.Environment(loader=_jinja2.FileSystemLoader(path)).get_template(filename).render(context)
+    rendered_path = _os.path.join(generated_path, 'cluster/yaml/.generated-tfevent-volume-pvc.yaml')
     with open(rendered_path, 'wt') as fh:
         fh.write(rendered)
         print("'%s' => '%s'." % (filename, rendered_path))
 
     cmd = """
-kubectl create -f %s/.generated-users-pvc.yaml
+# StorageClass
+kubectl create -f %s/cluster/yaml/.generated-openebs-storageclass.yaml
+sleep 3
 
-# Rook
-kubectl create -f %s/.generated-operator.yaml
-kubectl create -f %s/cluster/yaml/rook/cluster.yaml
-kubectl create -f %s/cluster/yaml/rook/filesystem.yaml
+# PVC
+kubectl create -f %s/cluster/yaml/.generated-users-kubeflow-pvc.yaml
+kubectl create -f %s/cluster/yaml/.generated-tfevent-volume-pvc.yaml
 
-sleep 300 
+# MySql 
+kubectl create -f %s/cluster/yaml/.generated-mysql-master-svc.yaml
+kubectl create -f %s/cluster/yaml/.generated-mysql-master-deploy.yaml
 
-kubectl create -f %s/.generated-toolbox.yaml
-
-sleep 120 
-
-kubectl get pod -l "app=rook-ceph-tools" -o jsonpath='{.items[0].status.containerStatuses[0].ready}'
-
-kubectl exec -it $(kubectl get pod -l "app=rook-ceph-tools" -o jsonpath='{.items[0].metadata.name}') mkdir /mnt/pipelineai/users 
-kubectl exec -it $(kubectl get pod -l "app=rook-ceph-tools" -o jsonpath='{.items[0].metadata.name}') mkdir /mnt/pipelineai/notebooks
-kubectl exec -it $(kubectl get pod -l "app=rook-ceph-tools" -o jsonpath='{.items[0].metadata.name}') ls /mnt/pipelineai
-
-# Admin
-kubectl create -f %s/cluster/yaml/admin/admin-deploy.yaml
-kubectl create -f %s/cluster/yaml/admin/admin-svc.yaml
-
-# Api / MLflow
-kubectl create -f %s/.generated-api-rook-deploy.yaml
-kubectl create -f %s/cluster/yaml/api/api-svc.yaml
-
-# Notebook
-kubectl create -f %s/.generated-notebook-%s-rook-deploy.yaml
-kubectl create -f %s/cluster/yaml/notebook/notebook-%s-svc.yaml
-
-# Hystrix
-kubectl create -f %s/cluster/yaml/dashboard/hystrix-deploy.yaml
-kubectl create -f %s/cluster/yaml/dashboard/hystrix-svc.yaml
-
-# Turbine (Part 1)
-kubectl create -f %s/cluster/yaml/dashboard/turbine-deploy.yaml
-kubectl create -f %s/cluster/yaml/dashboard/turbine-svc.yaml
-
-# Istio
-kubectl create -f %s/.generated-istio-%s-metricsoff-1.0.5.yaml
-kubectl create -f %s/.generated-pipelineai-gateway.yaml
-
-kubectl create -f %s/.generated-virtualservice-admin.yaml
-kubectl create -f %s/.generated-virtualservice-api.yaml
-#kubectl create -f %s/.generated-virtualservice-airflow.yaml
-kubectl create -f %s/.generated-virtualservice-notebook-%s.yaml
-kubectl create -f %s/.generated-virtualservice-hystrix.yaml
-kubectl create -f %s/.generated-virtualservice-turbine.yaml
-
-# Turbine (Part 2)
-# TODO:  Narrow this scope
-kubectl create clusterrolebinding pipelineai-serviceaccounts-view \
-  --clusterrole=view \
-  --group=system:serviceaccounts
+# Redis
+kubectl create -f %s/cluster/yaml/.generated-redis-master-svc.yaml
+kubectl create -f %s/cluster/yaml/.generated-redis-master-deploy.yaml
 
 # Airflow
+kubectl create -f %s/cluster/yaml/.generated-airflow-svc.yaml
+kubectl create -f %s/cluster/yaml/.generated-airflow-deploy.yaml
 
-# Allow creation of pods and routes (Airflow)
-#kubectl create clusterrolebinding pipelineai-cluster-admin \
-  --clusterrole=cluster-admin \
-  --group=system:serviceaccounts
+# MLflow
+kubectl create -f %s/cluster/yaml/.generated-mlflow-svc.yaml
+kubectl create -f %s/cluster/yaml/.generated-mlflow-deploy.yaml
 
-#helm repo update
-
-#helm install --name airflow stable/airflow --set airflow.service.type=NodePort --set postgresql.persistence.enabled=false --set airflow.image.repository=stibbons31/docker-airflow-dev --set airflow.image.tag=2.0dev --set airflow.config.AIRFLOW__CORE__LOAD_EXAMPLES=True --set airflow.config.AIRFLOW__WEBSERVER__BASE_URL=http://hostname:port/admin/workflow --set airflow.config.AIRFLOW__CELERY__FLOWER_URL_PREFIX=/admin/workflow/flower
-
-sleep 5
-
-#kubectl patch deployment airflow-web --type json -p='[{"op": "remove", "path": "/spec/template/spec/containers/0/livenessProbe"}]'
-
-# Add /mnt/pipelineai/shared to Airflow
-#kubectl delete -f %s/cluster/yaml/airflow/airflow-scheduler-deploy.yaml
-#kubectl delete -f %s/cluster/yaml/airflow/airflow-web-deploy.yaml
-#kubectl delete -f %s/cluster/yaml/airflow/airflow-worker-statefulset.yaml
-
-sleep 5
-
-#kubectl create -f %s/cluster/yaml/airflow/airflow-scheduler-deploy.yaml
-#kubectl create -f %s/cluster/yaml/airflow/airflow-web-deploy.yaml
-#kubectl create -f %s/cluster/yaml/airflow/airflow-worker-statefulset.yaml
-
-#kubectl delete deploy airflow-flower 
-
-# Kafka 
-#helm repo add confluentinc https://confluentinc.github.io/cp-helm-charts/
-#helm repo update
-
-#helm install confluentinc/cp-helm-charts --name kafka --set cp-zookeeper.enabled=true,cp-zookeeper.persistence.enabled=false,cp-kafka.enabled=true,cp-kafka.persistence.enabled=false,cp-schema-registry.enabled=false,cp-kafka-rest.enabled=true,cp-kafka-connect.enabled=false,cp-ksql-server.enabled=false
-
-#kubectl create -f %s/cluster/yaml/kafka/kafka-rest-svc.yaml
-#kubectl create -f %s/cluster/yaml/kafka/kafka-svc.yaml
-
-# Metrics
-kubectl create -f %s/cluster/yaml/metrics/
-
+# Istio
+kubectl create -f %s/cluster/yaml/.generated-crds.yaml
+kubectl create -f %s/cluster/yaml/.generated-istio-noauth.yaml
+kubectl create -f %s/cluster/yaml/.generated-pipelineai-gateway.yaml
+kubectl create -f %s/cluster/yaml/.generated-virtualservice-airflow.yaml
+kubectl create -f %s/cluster/yaml/.generated-virtualservice-mlflow.yaml
+kubectl create -f %s/cluster/yaml/.generated-virtualservice-grafana.yaml
 """ % (
        generated_path,
        generated_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       generated_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       generated_path,
-       pipeline_templates_path, 
-       generated_path,
-       chip,
-       pipeline_templates_path,
-       chip,
-       generated_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       generated_path,
-       ingress_type,
        generated_path,
        generated_path,
        generated_path,
        generated_path,
        generated_path,
        generated_path,
-       chip,
        generated_path,
        generated_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-       pipeline_templates_path,
-    )
+       generated_path,
+       generated_path,
+       generated_path,
+       generated_path,       
+       generated_path,
+       generated_path,
+       generated_path,
+)
 
     if not dry_run:
         print(cmd)

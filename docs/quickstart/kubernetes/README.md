@@ -1,20 +1,30 @@
 ## Create Kubernetes Cluster
 We recommend [**Jenkins-X**](https://jenkins-x.io/getting-started/install/) to install on AWS/EKS, Azure/AKS, Google Cloud/GKE, or On-Premise.
 
-_Note: When using AWS EKS, make sure you allocate 100GB to the root volume ephemeral storage - or you will see lots of `Evicted` pods.  The default of 20GB is not enough to store the Docker images on each node._
+_Note: When using AWS EKS, make sure you allocate 100GB to the root volume ephemeral storage - or you will see lots of `Evicted` pods.  The defaults of 10GB or 20GB is not enough for the Docker images._
 
 Here is a sample command using [Jenkins-X](https://jenkins-x.io/commands/jx_create_cluster_eks/) with AWS EKS:
 ```
-jx create cluster eks --node-type=<instance-type> --node-volume-size=100 --verbose=true --cluster-name=pipelineai --install-dependencies=true --skip-ingress=true --skip-installation=true --nodes=1 --eksctl-log-level=5 --version=1.11
+jx create cluster eks --node-type=<instance-type> --node-volume-size=100 --verbose=true --cluster-name=pipelineai --install-dependencies=true --skip-ingress=true --skip-installation=true --nodes=1 --eksctl-log-level=5 --version=1.14
 ```
 Notes:
 * Use `--ssh-public-key=/path/to/public/key.pub` to enable ssh'ing to the worker.  
 * You may also need to open port 22 on the worker node security group.
 
+## (AWS-Only) Update Kubernetes Config (`~/.kube/config`)
+### Install `aws-iam-authenticator`
+See these docs for more info:  https://docs.aws.amazon.com/eks/latest/userguide/install-aws-iam-authenticator.html
+
+### Update Config
+See these docs for more info:  https://docs.aws.amazon.com/eks/latest/userguide/create-kubeconfig.html
+```
+aws eks update-kubeconfig --region us-west-2 --name pipelineai
+```
+
 ## Install PipelineAI on Kubernetes
 ### Prerequisites
-* Running Kubernetes Cluster
-* Kubectl Installed
+* Running Kubernetes Cluster (Above)
+* [Kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/) Installed
 * MacOS, Linux, or Powershell (Windows)
 * Python 2 or 3 ([Miniconda with Python 3.6](https://repo.continuum.io/miniconda/) is Preferred)
 * [**PipelineAI CLI**](../README.md#install-pipelinecli)
@@ -22,6 +32,9 @@ Notes:
 * 4 CPU
 * 8GB RAM
 * (Optional) Nvidia GPU
+
+### Install [`kubectl`](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
+* Click [**HERE**](https://kubernetes.io/docs/tasks/tools/install-kubectl/) to install the PipelineAI CLI
 
 ### Install [PipelineAI CLI](../README.md#install-pipelinecli)
 * Click [**HERE**](../README.md#install-pipelinecli) to install the PipelineAI CLI
@@ -57,18 +70,18 @@ Notes:
 ### AWS IAM Roles (AWS-Only)
 Make sure the underlying EC2 instances for your EKS cluster contain the `AmazonEC2ContainerRegistryPowerUser` instance policy.   See [here](https://aws.amazon.com/blogs/security/easily-replace-or-attach-an-iam-role-to-an-existing-ec2-instance-by-using-the-ec2-console/) and [here](https://eksworkshop.com/logging/prereqs/) for more info.
 
-### Create and Switch to a Namespace (or just use `default`)
+### Create and Switch to `kubeflow` Namespace
 ```
-kubectl create namespace default
+kubectl create namespace kubeflow
 
-kubectl config set-context $(kubectl config current-context) --namespace=default
+kubectl config set-context $(kubectl config current-context) --namespace=kubeflow
 ```
 
 ### (Optional) Enable Kubernetes to Recognize GPUs
 Notes:
 * Currently, EKS only supports p2 and p3 [GPU instance types](https://aws.amazon.com/marketplace/pp/B07GRHFXGM)
 * For GPU with EKS, YOU MUST ACCEPT THE AMI TERMS [HERE](https://aws.amazon.com/marketplace/pp/B07GRHFXGM)
-* You may need to change the version above (ie. v1.12).  Run `kubectl version` and verify the `Server Version` of Kubernetes
+* You may need to change the version above (ie. v1.12+).  Run `kubectl version` and verify the `Server Version` of Kubernetes
 
 (Optional) Apply the Nvidia GPU plugin
 ```
@@ -89,9 +102,10 @@ PipelineAI CLI Args
 * `--image-registry-url`: Your Docker Registry URL for images created by PipelineAI (ie. ECR, DockerHub, etc)
 * `--image-registry-username`: (Optional) Leave blank if your Docker Registry is managed by IAM Policies/Roles (ie. ECR)
 * `--image-registry-password`: (Optional) Leave blank if your Docker Registry is managed by IAM Policies/Roles (ie. ECR)
-* `--ingress-type`:  (Optional) "nodeport" or "loadbalancer" (Default `nodeport`)
+* `--users-storage-gb`: (Optional) Size of persistent volume (Default `10Gi`)
+* `--ingress-type`: (Optional) `nodeport` or `loadbalancer` (Default `nodeport`)
 ```
-pipeline cluster-kube-install --tag 1.5.0 --ingress-type=<nodeport or loadbalancer> --chip=cpu --namespace=default --image-registry-url=<your-docker-registry-url> --image-registry-username=<optional> --image-registry-password=<optional>
+pipeline cluster-kube-install --tag 1.5.0 --chip=cpu --namespace=kubeflow --image-registry-url=<your-docker-registry-url> --image-registry-username=<optional> --image-registry-password=<optional> --users-storage-gb=100Gi --ingress-type=<nodeport or loadbalancer>
 ```
 Notes:  
 * Add `--dry-run=True` to generate and inspect the yaml generated in $HOME/.pipelineai
@@ -109,9 +123,6 @@ Notes:
 * The LoadBalancer DNS may take some time to propagate.
 * For EKS, you can modify the istio loadbalancer yaml to include the `service.beta.kubernetes.io/aws-load-balancer-internal: 0.0.0.0/0` annotation to enforce internal LoadBalancer (vs. public-facing, external)
 * To use SSL with your ELB, you will need to upload a certificate, add a listener to the ELB configured with SSL on load balancer port 443 targeting instance port 31380
-
-### Whitelist the DNS Name with PipelineAI
-Email [**contact@pipeline.ai**](mailto:contact@pipeline.ai) to whitelist your DNS name with PipelineAI.
 
 ### (Optional) Scale the Cluster/Node Group
 Get the Node Group name using `eksctl`

@@ -1,7 +1,7 @@
 ![PipelineAI Logo](http://pipeline.ai/assets/img/logo/pipelineai-logo.png)
 
 ### Requirements
-* Python 2 or 3 ([Conda](https://conda.io/docs/install/quick.html) is Preferred)
+* Python 3 ([Conda](https://conda.io/docs/install/quick.html) is Preferred)
 * (Windows Only) Install [PowerShell](https://github.com/PowerShell/PowerShell/tree/master/docs/installation) 
 
 ### (Optional) Uninstall Any Existing PipelineAI CLI
@@ -12,7 +12,7 @@ pip uninstall cli-pipeline
 ### Install PipelineAI CLI
 [![PyPI PipelineAI CLI](https://badge.fury.io/py/cli-pipeline@2x.png)](https://pypi.python.org/pypi/cli-pipeline/)
 ```
-pip install cli-pipeline==1.5.309 --default-timeout=120 --ignore-installed --no-cache --upgrade
+pip install cli-pipeline==1.5.330 --default-timeout=120 --ignore-installed --no-cache --upgrade
 ```
 Notes: 
 * You may need to uninstall any existing `cli-pipeline` using `pip uninstall cli-pipeline`
@@ -38,10 +38,8 @@ default predict base image: docker.io/pipelineai/predict-cpu:1.5.0
 
 ### PipelineAI Quick Start (CPU, GPU, and TPU)
 Train and Deploy your ML and AI Models in the Following Environments:
-* [Hosted Community Edition](/docs/quickstart/community)
-* [Docker](/docs/quickstart/docker)
 * [Kubernetes](/docs/quickstart/kubernetes)
-* [AWS SageMaker](/docs/quickstart/sagemaker)
+* [SageMaker](/docs/quickstart/sagemaker)
 
 ### PipelineAI CLI Overview
 ```
